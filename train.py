@@ -53,7 +53,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     model.config.pad_token_id = model.config.eos_token_id
 
     # data
-    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True)
+    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir="/scratch/leuven/328/vsc32851/cache")
 
     # it is customary to train LLMs by fully "packing" the context length with
     # fragments of one or more documents
@@ -69,7 +69,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     #                'tokenizer': tokenizer,
     #                'context_length': context_length})
 
-    per_device_train_batch_size = 1
+    per_device_train_batch_size = 2
     gradient_accumulation_steps = 8
     training_steps = 10_000_000_000 // (torch.cuda.device_count() * per_device_train_batch_size *
                                        gradient_accumulation_steps * context_length)
@@ -91,9 +91,10 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         #per_device_eval_batch_size=per_device_train_batch_size,
         #eval_accumulation_steps=gradient_accumulation_steps,
         save_strategy='steps',
+        include_num_input_tokens_seen=True,
         save_steps=save_steps,
         bf16=True,
-        output_dir='/tmp/geitje/output',
+        output_dir='/scratch/leuven/328/vsc32851/llm-output',
         report_to=['wandb'],
         logging_steps=1,
         logging_first_step=True,
