@@ -100,7 +100,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         logging_first_step=True,
         hub_model_id=new_model_name,
         hub_private_repo=True,
-        push_to_hub=False,
+        push_to_hub=True,
         hub_strategy='all_checkpoints',
     )
 
@@ -118,9 +118,9 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
 
 if __name__ == '__main__':
     train(
-        base_model='mistralai/Mistral-7B-v0.1',
+        base_model='/scratch/leuven/328/vsc32851/transtokenizers/en-nl-mistral/en-nl',
         context_length=8192,
         dataset_name='oscar',
         dataset_subname='unshuffled_deduplicated_nl',
-        new_model_name='Rijgersberg/GEITje-7B',
+        new_model_name='pdelobelle/dutch-7B',
     )
