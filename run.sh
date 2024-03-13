@@ -54,9 +54,9 @@ ml CUDA/11.7.1
 
 #ulimit -c 0conda env remove --name 
 
-project="knockout-nl"
-group="bpe"
+export WANDB_PROJECT="knockout-nl"
+export WANDB_GROUP="bpe"
 
-srun accelerate launch train.py -project $project --group $group 
+srun accelerate launch train.py
 
 deactivate

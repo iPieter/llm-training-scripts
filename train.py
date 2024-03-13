@@ -1,10 +1,10 @@
+import argparse
 import datasets
 import torch
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling, \
     AutoModelForCausalLM, AutoTokenizer
 import os
 
-os.environ["WANDB_PROJECT"]="test_llm"
 
 
 def pack(dataset, tokenizer, context_length, key='text'):
@@ -63,11 +63,11 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
                     'tokenizer': tokenizer,
                     'context_length': context_length})
 
-    #packed_validation_dataset = datasets.IterableDataset.from_generator(
-    #    generator=pack,
-    #    gen_kwargs={'dataset': dataset['validation'],
-    #                'tokenizer': tokenizer,
-    #                'context_length': context_length})
+    packed_validation_dataset = datasets.IterableDataset.from_generator(
+       generator=pack,
+       gen_kwargs={'dataset': dataset['validation'],
+                   'tokenizer': tokenizer,
+                   'context_length': context_length})
 
     per_device_train_batch_size = 2
     gradient_accumulation_steps = 8
@@ -80,16 +80,15 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     training_args = TrainingArguments(
         max_steps=training_steps,
         optim='adamw_bnb_8bit',
-        learning_rate=2e-5,
+        learning_rate=1e-4,
         lr_scheduler_type='cosine',
         warmup_steps=int(training_steps * 0.1),
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
-        #evaluation_strategy='steps',
-        #eval_steps=eval_steps,
-        #per_device_eval_batch_size=per_device_train_batch_size,
-        #eval_accumulation_steps=gradient_accumulation_steps,
+        evaluation_strategy='steps',
+        eval_steps=eval_steps,
+        per_device_eval_batch_size=per_device_train_batch_size,
         save_strategy='steps',
         include_num_input_tokens_seen=True,
         save_steps=save_steps,
@@ -109,7 +108,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         args=training_args,
         tokenizer=tokenizer,
         train_dataset=packed_train_dataset,
-        #eval_dataset=packed_validation_dataset,
+        eval_dataset=packed_validation_dataset,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
@@ -117,10 +116,17 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
 
 
 if __name__ == '__main__':
+    # Parse cli args
+    parser = argparse.ArgumentParser(description='Train a language model')
+    parser.add_argument('--project', type=str, help='The wandb project to use')
+    parser.add_argument('--wandb', type=bool, help='Whether to use wandb')
+
+    args = parser.parse_args()
+    
     train(
         base_model='/scratch/leuven/328/vsc32851/transtokenizers/en-nl-mistral/en-nl',
         context_length=8192,
-        dataset_name='oscar',
-        dataset_subname='unshuffled_deduplicated_nl',
+        dataset_name='yhavinga/mc4_nl_cleaned',
+        dataset_subname='full',
         new_model_name='pdelobelle/dutch-7B',
     )
