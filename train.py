@@ -70,7 +70,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
                    'context_length': context_length})
 
     per_device_train_batch_size = 2
-    gradient_accumulation_steps = 8
+    gradient_accumulation_steps = 32
     training_steps = 10_000_000_000 // (torch.cuda.device_count() * per_device_train_batch_size *
                                        gradient_accumulation_steps * context_length)
 
@@ -81,7 +81,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         max_steps=training_steps,
         optim='adamw_bnb_8bit',
         learning_rate=1e-4,
-        lr_scheduler_type='CONSTANT_WITH_WARMUP',
+        lr_scheduler_type='constant_with_warmup',
         warmup_steps=int(training_steps * 0.1),
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,

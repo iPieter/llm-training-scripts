@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=1              # Number of tasks (processes) per node
 #SBATCH --cpus-per-task=72
 #SBATCH --gpus-per-node=4                # Number of tasks (processes) per node
-#SBATCH --time=48:00:00                   # Walltime limit (hh:mm:ss)
+#SBATCH --time=4:00:00                   # Walltime limit (hh:mm:ss)
 
 # Set HF_HOME if VSC_SCRATCH_SITE doesn't exist
 if [ -n "$VSC_SCRATCH_SITE" ]; then
@@ -54,7 +54,7 @@ ml CUDA/11.7.1
 
 #ulimit -c 0conda env remove --name 
 
-export WANDB_PROJECT="knockout-nl"
+export WANDB_PROJECT="tiktotok-nl"
 export WANDB_GROUP="bpe"
 
 srun accelerate launch train.py
