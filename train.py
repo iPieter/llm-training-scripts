@@ -54,6 +54,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
 
     # data
     dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir="/scratch/leuven/328/vsc32851/cache")
+    dataset = dataset.shuffle(seed=43, buffer_size=10_000)
 
     # it is customary to train LLMs by fully "packing" the context length with
     # fragments of one or more documents
@@ -70,19 +71,19 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
                    'context_length': context_length})
 
     per_device_train_batch_size = 2
-    gradient_accumulation_steps = 32
+    gradient_accumulation_steps = 64
     training_steps = 10_000_000_000 // (torch.cuda.device_count() * per_device_train_batch_size *
                                        gradient_accumulation_steps * context_length)
 
     save_steps = training_steps // (6 * 4) + 1
-    eval_steps = training_steps // (6 * 8) + 1
+    eval_steps = training_steps // (6 * 2) + 1
     # training
     training_args = TrainingArguments(
         max_steps=training_steps,
         optim='adamw_bnb_8bit',
-        learning_rate=1e-4,
+        learning_rate=2e-5,
         lr_scheduler_type='constant_with_warmup',
-        warmup_steps=int(training_steps * 0.1),
+        warmup_steps=int(training_steps * 0.05),
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
@@ -93,6 +94,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         include_num_input_tokens_seen=True,
         save_steps=save_steps,
         bf16=True,
+        ignore_data_skip=True,
         output_dir='/scratch/leuven/328/vsc32851/llm-output',
         report_to=['wandb'],
         logging_steps=1,
@@ -100,7 +102,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         hub_model_id=new_model_name,
         hub_private_repo=True,
         push_to_hub=True,
-        hub_strategy='all_checkpoints',
+        hub_strategy='all_checkpoints'
     )
 
     trainer = Trainer(
@@ -112,7 +114,9 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
-    trainer.train()
+    trainer.train(
+            resume_from_checkpoint="/scratch/leuven/328/vsc32851/llm-output/checkpoint-199/"
+    )
 
 
 if __name__ == '__main__':

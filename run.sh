@@ -6,9 +6,9 @@
 #SBATCH --partition=gpu                  # Specify the partition name
 #SBATCH --nodes=1                        # Number of nodes
 #SBATCH --ntasks-per-node=1              # Number of tasks (processes) per node
-#SBATCH --cpus-per-task=72
-#SBATCH --gpus-per-node=4                # Number of tasks (processes) per node
-#SBATCH --time=4:00:00                   # Walltime limit (hh:mm:ss)
+#SBATCH --cpus-per-task=32
+#SBATCH --gpus-per-node=2                # Number of tasks (processes) per node
+#SBATCH --time=6:00:00                   # Walltime limit (hh:mm:ss)
 
 # Set HF_HOME if VSC_SCRATCH_SITE doesn't exist
 if [ -n "$VSC_SCRATCH_SITE" ]; then
@@ -55,7 +55,8 @@ ml CUDA/11.7.1
 #ulimit -c 0conda env remove --name 
 
 export WANDB_PROJECT="tiktotok-nl"
-export WANDB_GROUP="bpe"
+export WANDB_GROUP="mistral-7b"
+export WANDB_JOB_TYPE="pretraining"
 
 srun accelerate launch train.py
 
