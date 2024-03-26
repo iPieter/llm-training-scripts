@@ -114,6 +114,9 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
+    # overwrite lr scheduler
+    trainer.create_scheduler()
+
     trainer.train(
             resume_from_checkpoint="/scratch/leuven/328/vsc32851/llm-output/checkpoint-199/"
     )
