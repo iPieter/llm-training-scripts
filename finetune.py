@@ -78,4 +78,4 @@ if __name__ == '__main__':
                                                        for turn in row['messages_nl']))
 
     train(model, tokenizer, chat_dataset,
-          new_model_name='pdelobelle/tweety-7b-chat-v24.1')
+          new_model_name='pdelobelle/tweety-7b-chat-v24a')
