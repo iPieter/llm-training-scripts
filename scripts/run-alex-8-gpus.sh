@@ -58,6 +58,6 @@ export WANDB_PROJECT="wiki-en"
 export WANDB_GROUP="7b"
 export WANDB_JOB_TYPE="pretraining"
 
-srun accelerate launch train.py --output-dir $TMP/llm-output --cache-dir $TMPDIR/.cache"
+srun accelerate launch train.py --output-dir $TMPDIR/llm-output --cache-dir $TMPDIR/.cache"
 
 deactivate
