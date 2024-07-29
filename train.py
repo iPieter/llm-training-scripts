@@ -199,7 +199,7 @@ if __name__ == "__main__":
         base_model="mistralai/Mistral-7B-v0.1",
         context_length=8192,
         dataset_name="pdelobelle/enwiki-yearly-cleaned",
-        dataset_subname="tiny",
+        dataset_subname="full",
         new_model_name="pdelobelle/wikiPT-7B-2024",
         args=args,
     )

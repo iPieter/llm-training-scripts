@@ -1,25 +1,22 @@
 #!/bin/bash
-#SBATCH --job-name=train_bert            # Job name
+#SBATCH --job-name=wiki-en               # Job name
 #SBATCH --output=logs/%j.out             # Output file
 #SBATCH --error=logs/%j.err              # Error file
-#SBATCH --clusters=wice                  # Cluster
-#SBATCH --partition=gpu                  # Specify the partition name
+#SBATCH --gres=gpu:a100:8 -C a100_80
 #SBATCH --nodes=1                        # Number of nodes
-#SBATCH --ntasks-per-node=1              # Number of tasks (processes) per node
-#SBATCH --cpus-per-task=32
-#SBATCH --gpus-per-node=2                # Number of tasks (processes) per node
-#SBATCH --time=6:00:00                   # Walltime limit (hh:mm:ss)
+#SBATCH --time=8:00:00                   # Walltime limit (hh:mm:ss)
 
-# Set HF_HOME if VSC_SCRATCH_SITE doesn't exist
-if [ -n "$VSC_SCRATCH_SITE" ]; then
-  HF_HOME="$VSC_SCRATCH_SITE/.cache"
-  WANDB_CACHE_DIR="$VSC_SCRATCH_SITE/.wandb_cache"
-  WANDB_DATA_DIR="$VSC_SCRATCH_SITE/.wandb_staging"
-else
-  HF_HOME="/cw/dtaijupiter/NoCsBack/dtai/pieterd/hf_cache"
-  WANDB_CACHE_DIR="/cw/dtaijupiter/NoCsBack/dtai/pieterd/.wandb_cache"
-  WANDB_DATA_DIR="/cw/dtaijupiter/NoCsBack/dtai/pieterd/.wandb_staging"
-fi
+
+module add python
+module add gcc/12.1.0
+module add cuda/12.1.1
+
+export http_proxy=http://proxy:80
+export https_proxy=http://proxy:80
+
+HF_HOME="$TMPDIR/.cache"
+WANDB_CACHE_DIR="$TMPDIR/.wandb_cache"
+WANDB_DATA_DIR="$TMPDIR/.wandb_staging"
 
 mkdir -p "$HF_HOME"
 mkdir -p "$WANDB_CACHE_DIR"
@@ -32,32 +29,14 @@ export WANDB_DATA_DIR
 export TOKENIZERS_PARALLELISM=false
 
 venv_path=".env"
-
-# Check if .env folder already exists
-if [ ! -d "$venv_path" ]; then
-  # .env folder does not exist, create and activate a new virtual environment
-  conda activate py310-base
-  python3 -m venv "$venv_path"
-  source "$venv_path/bin/activate"
-
-  # Install Python packages from requirements.txt
-  pip install -r requirements.txt
-else
-  # .env folder already exists, activate the existing virtual environment
-  source "$venv_path/bin/activate"
-fi
-
-
-# Load nccl stuff
-ml NCCL/2.10.3-GCCcore-10.3.0-CUDA-11.3.1 
-ml CUDA/11.7.1
-
-#ulimit -c 0conda env remove --name 
+source "$venv_path/bin/activate"
 
 export WANDB_PROJECT="wiki-en"
 export WANDB_GROUP="7b"
 export WANDB_JOB_TYPE="pretraining"
 
-srun accelerate launch --mixed_precision b16 train.py --output-dir $TMPDIR/llm-output --cache-dir $TMPDIR/.cache --proxy
+mkdir $FASTTMP/llm-output
+
+srun accelerate launch --mixed_precision bf16 train.py --output-dir $FASTTMP/llm-output --cache-dir $TMPDIR/.cache --proxy
 
 deactivate
