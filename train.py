@@ -4,6 +4,17 @@ import torch
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling, \
     AutoModelForCausalLM, AutoTokenizer
 import os
+import requests
+from huggingface_hub import configure_http_backend, get_session
+
+# Create a factory function that returns a Session with configured proxies
+def backend_factory() -> requests.Session:
+    session = requests.Session()
+    session.proxies = {"http": "http://proxy:80", "https": "http://proxy:80"}
+    return session
+
+# Set it as the default session factory
+configure_http_backend(backend_factory=backend_factory)
 
 
 
@@ -45,7 +56,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     model = AutoModelForCausalLM.from_pretrained(base_model,
                                                  torch_dtype=torch.bfloat16,
                                                  low_cpu_mem_usage=False,
-                                                 attn_implementation="flash_attention_2")
+                                                 attn_implementation="sdpa") # pytorch flash attn implementation
     tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
 
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
@@ -53,7 +64,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     model.config.pad_token_id = model.config.eos_token_id
 
     # data
-    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir="/scratch/leuven/328/vsc32851/cache")
+    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir="$TMPDIR/.cache")
     dataset = dataset.shuffle(seed=43, buffer_size=10_000)
 
     # it is customary to train LLMs by fully "packing" the context length with
@@ -95,7 +106,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         save_steps=save_steps,
         bf16=True,
         ignore_data_skip=True,
-        output_dir='/scratch/leuven/328/vsc32851/llm-output',
+        output_dir='$TMP/llm-output',
         report_to=['wandb'],
         logging_steps=1,
         logging_first_step=True,
@@ -117,9 +128,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     # overwrite lr scheduler
     trainer.create_scheduler()
 
-    trainer.train(
-            resume_from_checkpoint="/scratch/leuven/328/vsc32851/llm-output/checkpoint-199/"
-    )
+    trainer.train()
 
 
 if __name__ == '__main__':
@@ -131,9 +140,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     train(
-        base_model='/scratch/leuven/328/vsc32851/transtokenizers/en-nl-mistral/en-nl',
+        base_model='meta-llama/Meta-Llama-3-8B-Instruct',
         context_length=8192,
-        dataset_name='yhavinga/mc4_nl_cleaned',
-        dataset_subname='full',
-        new_model_name='pdelobelle/dutch-7B',
+        dataset_name='wikimedia/wikipedia',
+        dataset_subname='20231101.de',
+        new_model_name='pdelobelle/german-7B',
     )
