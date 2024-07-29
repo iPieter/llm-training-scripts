@@ -186,12 +186,13 @@ if __name__ == "__main__":
         type=str,
         help="Location of the cache directory (for HF datasets etc)",
     )
-    parser.add_argument("--proxy", type=bool, help="Whether to use a proxy")
+    parser.add_argument("--proxy",  action='store_true', help="Whether to use a proxy")
 
     args = parser.parse_args()
 
     if args.proxy:
         # Set it as the default session factory
+        print("using proxy")
         configure_http_backend(backend_factory=backend_factory)
 
     train(
