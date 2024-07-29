@@ -1,12 +1,19 @@
 import argparse
 import datasets
 import torch
-from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling, \
-    AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import (
+    Trainer,
+    TrainingArguments,
+    DataCollatorForLanguageModeling,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    AutoConfig,
+)
 import os
 import requests
 from huggingface_hub import configure_http_backend, get_session
 from tokenizers import AddedToken
+
 
 # Create a factory function that returns a Session with configured proxies
 def backend_factory() -> requests.Session:
@@ -15,7 +22,7 @@ def backend_factory() -> requests.Session:
     return session
 
 
-def pack(dataset, tokenizer, context_length, key='text'):
+def pack(dataset, tokenizer, context_length, key="text"):
     """Concatenate ("pack") samples from a dataset into tokenized chunks of `context_length`.
 
     Used for efficient training of causal models without padding. No special measures are taken
@@ -35,7 +42,7 @@ def pack(dataset, tokenizer, context_length, key='text'):
     """
     cache = []
     for row in dataset:
-        ids = tokenizer(row[key], max_length=None)['input_ids']
+        ids = tokenizer(row[key], max_length=None)["input_ids"]
         ids[0] = tokenizer.special_tokens_map[f'<s_{row["year"]}>']
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
@@ -45,86 +52,112 @@ def pack(dataset, tokenizer, context_length, key='text'):
         cache.extend(ids)
         while len(cache) >= context_length:
             chunk = cache[:context_length]
-            yield {'input_ids': chunk,
-                   'attention_mask': [1] * context_length,
-                   'labels': chunk}
+            yield {
+                "input_ids": chunk,
+                "attention_mask": [1] * context_length,
+                "labels": chunk,
+            }
             cache = cache[context_length:]
+
 
 def extend_tokenizer(tokenizer):
     # add special tokens for the years
-    tokens = [ AddedToken(f'<s_{year}>', single_word=True, lstrip=True, rstrip=True) for year in ['2014', '2016', '2018', '2020', '2022', '2024']]
+    tokens = [
+        AddedToken(f"<s_{year}>", single_word=True, lstrip=True, rstrip=True)
+        for year in ["2014", "2016", "2018", "2020", "2022", "2024"]
+    ]
     tokenizer.add_tokens(tokens, special_tokens=True)
-    
+
+    print("Added the following tokens:")
+    print(tokens)
     return tokenizer
 
-def train(base_model, context_length, dataset_name, dataset_subname, new_model_name, args):
-   
+
+def train(
+    base_model, context_length, dataset_name, dataset_subname, new_model_name, args
+):
+
     tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
     tokenizer = extend_tokenizer(tokenizer)
 
     config = AutoConfig.from_pretrained(base_model)
-    model = AutoModelForCausalLM.from_config(config,
-                                                 torch_dtype=torch.bfloat16,
-                                                 attn_implementation="sdpa") # pytorch flash attn implementation
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+    )  # pytorch flash attn implementation
     model.resize_token_embeddings(len(tokenizer))
 
-
-    print(tokenizer('<s_2014>', return_tensors='pt'))
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
     tokenizer.pad_token = tokenizer.eos_token
     model.config.pad_token_id = model.config.eos_token_id
 
     # data
-    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir=args.cache_dir if args.cache_dir else None)
+    dataset = datasets.load_dataset(
+        dataset_name,
+        dataset_subname,
+        streaming=True,
+        trust_remote_code=True,
+        cache_dir=args.cache_dir if args.cache_dir else None,
+    )
     dataset = dataset.shuffle(seed=43, buffer_size=10_000)
 
     # it is customary to train LLMs by fully "packing" the context length with
     # fragments of one or more documents
     packed_train_dataset = datasets.IterableDataset.from_generator(
         generator=pack,
-        gen_kwargs={'dataset': dataset['train'],
-                    'tokenizer': tokenizer,
-                    'context_length': context_length})
+        gen_kwargs={
+            "dataset": dataset["train"],
+            "tokenizer": tokenizer,
+            "context_length": context_length,
+        },
+    )
 
     packed_validation_dataset = datasets.IterableDataset.from_generator(
-       generator=pack,
-       gen_kwargs={'dataset': dataset['validation'],
-                   'tokenizer': tokenizer,
-                   'context_length': context_length})
+        generator=pack,
+        gen_kwargs={
+            "dataset": dataset["validation"],
+            "tokenizer": tokenizer,
+            "context_length": context_length,
+        },
+    )
 
     per_device_train_batch_size = 2
     gradient_accumulation_steps = 64
-    training_steps = 10_000_000_000 // (torch.cuda.device_count() * per_device_train_batch_size *
-                                       gradient_accumulation_steps * context_length)
+    training_steps = 10_000_000_000 // (
+        torch.cuda.device_count()
+        * per_device_train_batch_size
+        * gradient_accumulation_steps
+        * context_length
+    )
 
     save_steps = training_steps // (6 * 4) + 1
     eval_steps = training_steps // (6 * 2) + 1
+    
     # training
     training_args = TrainingArguments(
         max_steps=training_steps,
-        optim='adamw_bnb_8bit',
+        optim="adamw_bnb_8bit",
         learning_rate=2e-5,
-        lr_scheduler_type='constant_with_warmup',
+        lr_scheduler_type="constant_with_warmup",
         warmup_steps=int(training_steps * 0.05),
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
-        evaluation_strategy='steps',
+        evaluation_strategy="steps",
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_train_batch_size,
-        save_strategy='steps',
+        save_strategy="steps",
         include_num_input_tokens_seen=True,
         save_steps=save_steps,
         bf16=True,
         ignore_data_skip=True,
         output_dir=args.output_dir,
-        report_to=['wandb'],
+        report_to=["wandb"],
         logging_steps=1,
         logging_first_step=True,
         hub_model_id=new_model_name,
         hub_private_repo=True,
         push_to_hub=True,
-        hub_strategy='all_checkpoints'
+        hub_strategy="all_checkpoints",
     )
 
     trainer = Trainer(
@@ -142,14 +175,18 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     trainer.train()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Parse cli args
-    parser = argparse.ArgumentParser(description='Train a language model')
-    parser.add_argument('--project', type=str, help='The wandb project to use')
-    parser.add_argument('--wandb', type=bool, help='Whether to use wandb')
-    parser.add_argument('--output-dir', type=str, help='Output directory')
-    parser.add_argument('--cache-dir', type=str, help='Location of the cache directory (for HF datasets etc)')
-    parser.add_argument('--proxy', type=bool, help='Whether to use a proxy')
+    parser = argparse.ArgumentParser(description="Train a language model")
+    parser.add_argument("--project", type=str, help="The wandb project to use")
+    parser.add_argument("--wandb", type=bool, help="Whether to use wandb")
+    parser.add_argument("--output-dir", type=str, help="Output directory")
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        help="Location of the cache directory (for HF datasets etc)",
+    )
+    parser.add_argument("--proxy", type=bool, help="Whether to use a proxy")
 
     args = parser.parse_args()
 
@@ -157,12 +194,11 @@ if __name__ == '__main__':
         # Set it as the default session factory
         configure_http_backend(backend_factory=backend_factory)
 
-    
     train(
-        base_model='mistralai/Mistral-7B-v0.1',
+        base_model="mistralai/Mistral-7B-v0.1",
         context_length=8192,
-        dataset_name='pdelobelle/enwiki-yearly-cleaned',
-        dataset_subname='tiny',
-        new_model_name='pdelobelle/wikiPT-7B-2024',
-        args=args
+        dataset_name="pdelobelle/enwiki-yearly-cleaned",
+        dataset_subname="tiny",
+        new_model_name="pdelobelle/wikiPT-7B-2024",
+        args=args,
     )
