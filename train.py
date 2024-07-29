@@ -2,20 +2,17 @@ import argparse
 import datasets
 import torch
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling, \
-    AutoModelForCausalLM, AutoTokenizer
+    AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import os
 import requests
 from huggingface_hub import configure_http_backend, get_session
+from tokenizers import AddedToken
 
 # Create a factory function that returns a Session with configured proxies
 def backend_factory() -> requests.Session:
     session = requests.Session()
     session.proxies = {"http": "http://proxy:80", "https": "http://proxy:80"}
     return session
-
-# Set it as the default session factory
-configure_http_backend(backend_factory=backend_factory)
-
 
 
 def pack(dataset, tokenizer, context_length, key='text'):
@@ -39,6 +36,7 @@ def pack(dataset, tokenizer, context_length, key='text'):
     cache = []
     for row in dataset:
         ids = tokenizer(row[key], max_length=None)['input_ids']
+        ids[0] = tokenizer.special_tokens_map[f'<s_{row["year"]}>']
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
         # but is not automatically added by the tokenizer
@@ -52,19 +50,32 @@ def pack(dataset, tokenizer, context_length, key='text'):
                    'labels': chunk}
             cache = cache[context_length:]
 
-def train(base_model, context_length, dataset_name, dataset_subname, new_model_name):
-    model = AutoModelForCausalLM.from_pretrained(base_model,
-                                                 torch_dtype=torch.bfloat16,
-                                                 low_cpu_mem_usage=False,
-                                                 attn_implementation="sdpa") # pytorch flash attn implementation
-    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
+def extend_tokenizer(tokenizer):
+    # add special tokens for the years
+    tokens = [ AddedToken(f'<s_{year}>', single_word=True, lstrip=True, rstrip=True) for year in ['2014', '2016', '2018', '2020', '2022', '2024']]
+    tokenizer.add_tokens(tokens, special_tokens=True)
+    
+    return tokenizer
 
+def train(base_model, context_length, dataset_name, dataset_subname, new_model_name, args):
+   
+    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
+    tokenizer = extend_tokenizer(tokenizer)
+
+    config = AutoConfig.from_pretrained(base_model)
+    model = AutoModelForCausalLM.from_config(config,
+                                                 torch_dtype=torch.bfloat16,
+                                                 attn_implementation="sdpa") # pytorch flash attn implementation
+    model.resize_token_embeddings(len(tokenizer))
+
+
+    print(tokenizer('<s_2014>', return_tensors='pt'))
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
     tokenizer.pad_token = tokenizer.eos_token
     model.config.pad_token_id = model.config.eos_token_id
 
     # data
-    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir="$TMPDIR/.cache")
+    dataset = datasets.load_dataset(dataset_name, dataset_subname, streaming=True, cache_dir=args.cache_dir if args.cache_dir else None)
     dataset = dataset.shuffle(seed=43, buffer_size=10_000)
 
     # it is customary to train LLMs by fully "packing" the context length with
@@ -106,7 +117,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         save_steps=save_steps,
         bf16=True,
         ignore_data_skip=True,
-        output_dir='$TMP/llm-output',
+        output_dir=args.output_dir,
         report_to=['wandb'],
         logging_steps=1,
         logging_first_step=True,
@@ -136,13 +147,22 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a language model')
     parser.add_argument('--project', type=str, help='The wandb project to use')
     parser.add_argument('--wandb', type=bool, help='Whether to use wandb')
+    parser.add_argument('--output-dir', type=str, help='Output directory')
+    parser.add_argument('--cache-dir', type=str, help='Location of the cache directory (for HF datasets etc)')
+    parser.add_argument('--proxy', type=bool, help='Whether to use a proxy')
 
     args = parser.parse_args()
+
+    if args.proxy:
+        # Set it as the default session factory
+        configure_http_backend(backend_factory=backend_factory)
+
     
     train(
-        base_model='meta-llama/Meta-Llama-3-8B-Instruct',
+        base_model='mistralai/Mistral-7B-v0.1',
         context_length=8192,
-        dataset_name='wikimedia/wikipedia',
-        dataset_subname='20231101.de',
-        new_model_name='pdelobelle/german-7B',
+        dataset_name='pdelobelle/enwiki-yearly-cleaned',
+        dataset_subname='tiny',
+        new_model_name='pdelobelle/wikiPT-7B-2024',
+        args=args
     )
