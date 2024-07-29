@@ -41,9 +41,11 @@ def pack(dataset, tokenizer, context_length, key="text"):
     :yield: dicts of packed input_ids, attention_masks and (self-supervised) labels
     """
     cache = []
+    tokens = {y : tokenizer.get_vocab()[f'<s_{y}>'] for y in ["2014", "2016", "2018", "2020", "2022", "2024"]}
+
     for row in dataset:
         ids = tokenizer(row[key], max_length=None)["input_ids"]
-        ids[0] = tokenizer.special_tokens_map[f'<s_{row["year"]}>']
+        ids[0] = tokens[row['year']]
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
         # but is not automatically added by the tokenizer
@@ -142,7 +144,7 @@ def train(
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_train_batch_size,
         save_strategy="steps",
@@ -170,7 +172,7 @@ def train(
     )
 
     # overwrite lr scheduler
-    trainer.create_scheduler()
+    #trainer.create_scheduler(num_training_steps=training_steps)
 
     trainer.train()
 
@@ -178,8 +180,6 @@ def train(
 if __name__ == "__main__":
     # Parse cli args
     parser = argparse.ArgumentParser(description="Train a language model")
-    parser.add_argument("--project", type=str, help="The wandb project to use")
-    parser.add_argument("--wandb", type=bool, help="Whether to use wandb")
     parser.add_argument("--output-dir", type=str, help="Output directory")
     parser.add_argument(
         "--cache-dir",
