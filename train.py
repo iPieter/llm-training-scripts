@@ -1,4 +1,5 @@
 import argparse
+import re
 import datasets
 import torch
 from transformers import (
@@ -8,6 +9,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     AutoConfig,
+    SchedulerType,
 )
 import os
 import requests
@@ -44,7 +46,8 @@ def pack(dataset, tokenizer, context_length, key="text"):
     tokens = {y : tokenizer.get_vocab()[f'<s_{y}>'] for y in ["2014", "2016", "2018", "2020", "2022", "2024"]}
 
     for row in dataset:
-        ids = tokenizer(row[key], max_length=None)["input_ids"]
+        clean_text = print(re.sub(r'File:[^|]+\|','',re.sub(r'(\s+\t)', ' | ', row[key])))
+        ids = tokenizer(clean_text, max_length=None)["input_ids"]
         ids[0] = tokens[row['year']]
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
@@ -122,14 +125,16 @@ def train(
         },
     )
 
-    per_device_train_batch_size = 2
-    gradient_accumulation_steps = 16
+    per_device_train_batch_size = 16
+    gradient_accumulation_steps = 8
     training_steps = 10_000_000_000 // (
         torch.cuda.device_count()
         * per_device_train_batch_size
         * gradient_accumulation_steps
         * context_length
     )
+
+    print(f"Total tokens per training step: {per_device_train_batch_size * gradient_accumulation_steps * context_length * torch.cuda.device_count()}")
 
     save_steps = 100 #training_steps // (6 * 4) + 1
     eval_steps = 200 #training_steps // (6 * 2) + 1
@@ -139,7 +144,7 @@ def train(
         max_steps=training_steps,
         optim="adamw_bnb_8bit",
         learning_rate=2e-5,
-        lr_scheduler_type="constant_with_warmup",
+        lr_scheduler_type=SchedulerType.COSINE_WITH_RESTARTS,
         weight_decay=0.01,
         adam_beta2=0.95,
         warmup_steps=int(training_steps * 0.05),
@@ -198,10 +203,10 @@ if __name__ == "__main__":
         configure_http_backend(backend_factory=backend_factory)
 
     train(
-        base_model="mistralai/Mistral-7B-v0.1",
+        base_model="google/gemma-2-2b",
         context_length=8192,
         dataset_name="pdelobelle/enwiki-yearly-cleaned",
         dataset_subname="full",
-        new_model_name="pdelobelle/wikiPT-7B-2024",
+        new_model_name="pdelobelle/wikiPT-2B-2024",
         args=args,
     )
