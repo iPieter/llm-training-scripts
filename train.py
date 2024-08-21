@@ -100,7 +100,7 @@ def train(
         trust_remote_code=True,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    dataset = dataset.shuffle(seed=43, buffer_size=10_000)
+    dataset = dataset.shuffle(seed=43, buffer_size=20_000)
 
     # it is customary to train LLMs by fully "packing" the context length with
     # fragments of one or more documents
@@ -123,7 +123,7 @@ def train(
     )
 
     per_device_train_batch_size = 2
-    gradient_accumulation_steps = 64
+    gradient_accumulation_steps = 16
     training_steps = 10_000_000_000 // (
         torch.cuda.device_count()
         * per_device_train_batch_size
@@ -131,8 +131,8 @@ def train(
         * context_length
     )
 
-    save_steps = training_steps // (6 * 4) + 1
-    eval_steps = training_steps // (6 * 2) + 1
+    save_steps = 100 #training_steps // (6 * 4) + 1
+    eval_steps = 200 #training_steps // (6 * 2) + 1
     
     # training
     training_args = TrainingArguments(
@@ -140,6 +140,8 @@ def train(
         optim="adamw_bnb_8bit",
         learning_rate=2e-5,
         lr_scheduler_type="constant_with_warmup",
+        weight_decay=0.01,
+        adam_beta2=0.95,
         warmup_steps=int(training_steps * 0.05),
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -174,7 +176,7 @@ def train(
     # overwrite lr scheduler
     #trainer.create_scheduler(num_training_steps=training_steps)
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True)
 
 
 if __name__ == "__main__":
