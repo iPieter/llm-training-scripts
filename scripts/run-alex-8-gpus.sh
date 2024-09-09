@@ -3,12 +3,13 @@
 #SBATCH --output=logs/%j.out             # Output file
 #SBATCH --error=logs/%j.err              # Error file
 #SBATCH -p a100
-#SBATCH --gres=gpu:a100:8 -C a100_80
+#SBATCH --gres=gpu:a100:8 # -C a100_80
 #SBATCH --nodes=1                        # Number of nodes
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --time=24:00:00                   # Walltime limit (hh:mm:ss)
-
+# sent a SIGINT signal 60 seconds before terminating the process due to timeout
+#SBATCH --signal=SIGINT@120
 
 module add python
 module add gcc/12.1.0
@@ -40,8 +41,8 @@ export WANDB_JOB_TYPE="pretraining"
 
 cp $HOME/.cache/huggingface/token $HF_HOME/token
 
-mkdir $WORK/llm-output
+mkdir $WORK/llm-output-gemma-2b
 
-srun accelerate launch --mixed_precision bf16 train.py --output-dir $WORK/llm-output --cache-dir $TMPDIR/.cache --proxy
+srun accelerate launch --mixed_precision bf16 train.py --output-dir $WORK/llm-output-gemma-2b --cache-dir $TMPDIR/.cache --proxy
 
 deactivate

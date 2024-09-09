@@ -10,11 +10,18 @@ from transformers import (
     AutoTokenizer,
     AutoConfig,
     SchedulerType,
+    Phi3Config,
 )
 import os
 import requests
 from huggingface_hub import configure_http_backend, get_session
 from tokenizers import AddedToken
+import signal
+import torch
+
+from modeling_phi3 import (
+    Phi3ForCausalLM,
+)
 
 
 # Create a factory function that returns a Session with configured proxies
@@ -22,6 +29,12 @@ def backend_factory() -> requests.Session:
     session = requests.Session()
     session.proxies = {"http": "http://proxy:80", "https": "http://proxy:80"}
     return session
+
+def save_checkpoint_and_exit(trainer):
+    # Save the state
+    trainer.save_state()
+    print(f"State saved to {trainer.args.output_dir}. Exiting.")
+    exit(0)
 
 
 def pack(dataset, tokenizer, context_length, key="text"):
@@ -46,13 +59,13 @@ def pack(dataset, tokenizer, context_length, key="text"):
     tokens = {y : tokenizer.get_vocab()[f'<s_{y}>'] for y in ["2014", "2016", "2018", "2020", "2022", "2024"]}
 
     for row in dataset:
-        clean_text = print(re.sub(r'File:[^|]+\|','',re.sub(r'(\s+\t)', ' | ', row[key])))
+        clean_text = re.sub(r'File:[^|]+\|','',re.sub(r'(\s+\t)', ' | ', row[key]))
         ids = tokenizer(clean_text, max_length=None)["input_ids"]
         ids[0] = tokens[row['year']]
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
         # but is not automatically added by the tokenizer
-        ids.append(2)
+        # ids.append(2)
 
         cache.extend(ids)
         while len(cache) >= context_length:
@@ -85,12 +98,19 @@ def train(
     tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
     tokenizer = extend_tokenizer(tokenizer)
 
-    config = AutoConfig.from_pretrained(base_model)
-    model = AutoModelForCausalLM.from_config(
-        config, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+    config = Phi3Config.from_pretrained(base_model)
+    config._attn_implementation = "sdpa"
+    config.output_attentions = False
+    config.torch_dtype = "bfloat16"
+    model = Phi3ForCausalLM(
+        config #, torch_dtype=torch.bfloat16, attn_implementation="sdpa", output_attentions=False
     )  # pytorch flash attn implementation
     model.resize_token_embeddings(len(tokenizer))
-
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params:,}")
+    print(f"Estimated model size: {total_params * 2 / 1024**3:.2f} GB")  # Assuming bfloat16
+    
+    print(f"Model supports sdpa: {model._supports_sdpa}")
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
     tokenizer.pad_token = tokenizer.eos_token
     model.config.pad_token_id = model.config.eos_token_id
@@ -125,7 +145,7 @@ def train(
         },
     )
 
-    per_device_train_batch_size = 16
+    per_device_train_batch_size = 4
     gradient_accumulation_steps = 8
     training_steps = 10_000_000_000 // (
         torch.cuda.device_count()
@@ -143,7 +163,7 @@ def train(
     training_args = TrainingArguments(
         max_steps=training_steps,
         optim="adamw_bnb_8bit",
-        learning_rate=2e-5,
+        learning_rate=2e-4,
         lr_scheduler_type=SchedulerType.COSINE_WITH_RESTARTS,
         weight_decay=0.01,
         adam_beta2=0.95,
@@ -151,6 +171,7 @@ def train(
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={'use_reentrant':False},
         eval_strategy="steps",
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_train_batch_size,
@@ -179,7 +200,9 @@ def train(
     )
 
     # overwrite lr scheduler
-    #trainer.create_scheduler(num_training_steps=training_steps)
+    # trainer.create_scheduler(num_training_steps=training_steps)
+    
+    signal.signal(signal.SIGINT, lambda signal_number, frame: save_checkpoint_and_exit(trainer))
 
     trainer.train(resume_from_checkpoint=True)
 
@@ -203,8 +226,9 @@ if __name__ == "__main__":
         configure_http_backend(backend_factory=backend_factory)
 
     train(
-        base_model="google/gemma-2-2b",
-        context_length=8192,
+        base_model="microsoft/Phi-3-mini-4k-instruct",
+        #base_model="mistralai/Mistral-7B-v0.1",
+        context_length=4096,
         dataset_name="pdelobelle/enwiki-yearly-cleaned",
         dataset_subname="full",
         new_model_name="pdelobelle/wikiPT-2B-2024",
