@@ -10,7 +10,6 @@ from transformers import (
     AutoTokenizer,
     AutoConfig,
     SchedulerType,
-    Phi3Config,
 )
 import os
 import requests
@@ -19,16 +18,43 @@ from tokenizers import AddedToken
 import signal
 import torch
 
-from modeling_phi3 import (
-    Phi3ForCausalLM,
-)
+from modeling_gemma2 import MultiheadGemma2ForCausalLM, eu_languages
 
+from datasets import concatenate_datasets, interleave_datasets, load_dataset
+
+desired_datasets = [
+    "legal_mc4",
+    "open_discourse_bundestag",
+    "opensubtitles",
+    "oscar_2015_14",
+    "oscar_2016_40",
+    "oscar_2017_43",
+    "oscar_2018_47",
+    "oscar_2019_22",
+    "oscar_2020_24",
+    "oscar_2020_45",
+    "oscar_2021_49",
+    "oscar_2022_27",
+    #"oscar_2022_49",
+    "oscar_2023_14",
+    "oscar_2023_23",
+    "eurlex",
+    "parlamint",
+    "tagesschau_2018_2023",
+    "wikibooks",
+    "wikinews",
+    "wikipedia_euro",
+    "wikiquote",
+    "wikisource",
+    "wikivoyage",
+]
 
 # Create a factory function that returns a Session with configured proxies
 def backend_factory() -> requests.Session:
     session = requests.Session()
     session.proxies = {"http": "http://proxy:80", "https": "http://proxy:80"}
     return session
+
 
 def save_checkpoint_and_exit(trainer):
     # Save the state
@@ -56,12 +82,12 @@ def pack(dataset, tokenizer, context_length, key="text"):
     :yield: dicts of packed input_ids, attention_masks and (self-supervised) labels
     """
     cache = []
-    tokens = {y : tokenizer.get_vocab()[f'<s_{y}>'] for y in ["2014", "2016", "2018", "2020", "2022", "2024"]}
+    #tokens = {y: tokenizer.get_vocab()[f"<s_{y}>"] for y in ["2014", "2016", "2018", "2020", "2022", "2024"]}
 
     for row in dataset:
-        clean_text = re.sub(r'File:[^|]+\|','',re.sub(r'(\s+\t)', ' | ', row[key]))
+        clean_text = re.sub(r"File:[^|]+\|", "", re.sub(r"(\s+\t)", " | ", re.sub(r"\s+", " ", row[key])))
         ids = tokenizer(clean_text, max_length=None)["input_ids"]
-        ids[0] = tokens[row['year']]
+        #ids[0] = tokens[row["year"]]
 
         # end-of-sentence-token seems to have been present in Mistral 7B training data,
         # but is not automatically added by the tokenizer
@@ -78,68 +104,48 @@ def pack(dataset, tokenizer, context_length, key="text"):
             cache = cache[context_length:]
 
 
-def extend_tokenizer(tokenizer):
-    # add special tokens for the years
-    tokens = [
-        AddedToken(f"<s_{year}>", single_word=True, lstrip=True, rstrip=True)
-        for year in ["2014", "2016", "2018", "2020", "2022", "2024"]
-    ]
-    tokenizer.add_tokens(tokens, special_tokens=True)
+def train(base_model, context_length, dataset_name, dataset_subname, new_model_name, args):
 
-    print("Added the following tokens:")
-    print(tokens)
-    return tokenizer
+    tokenizers = { lang: AutoTokenizer.from_pretrained(tokenizer, use_fast=False) for _, lang, _, _, tokenizer in eu_languages}
+    
+    tokenizer = tokenizers['de']
 
+    model = MultiheadGemma2ForCausalLM.from_pretrained(base_model)
 
-def train(
-    base_model, context_length, dataset_name, dataset_subname, new_model_name, args
-):
-
-    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=False)
-    tokenizer = extend_tokenizer(tokenizer)
-
-    config = Phi3Config.from_pretrained(base_model)
-    config._attn_implementation = "sdpa"
-    config.output_attentions = False
-    config.torch_dtype = "bfloat16"
-    model = Phi3ForCausalLM(
-        config #, torch_dtype=torch.bfloat16, attn_implementation="sdpa", output_attentions=False
-    )  # pytorch flash attn implementation
-    model.resize_token_embeddings(len(tokenizer))
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params:,}")
+
+    model.config._attn_implementation = "sdpa"
+    model.config.output_attentions = False
+    model.config.torch_dtype = "bfloat16"
+
+    # saving some space
+    del model.model.embed_tokens['en']
+    del model.lm_head['en']
+    total_params = sum(p.numel() for p in model.parameters())
+
+    print(f"Total parameters after trimming 'en' weights: {total_params:,}")
     print(f"Estimated model size: {total_params * 2 / 1024**3:.2f} GB")  # Assuming bfloat16
-    
+
     print(f"Model supports sdpa: {model._supports_sdpa}")
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
     tokenizer.pad_token = tokenizer.eos_token
+    
     model.config.pad_token_id = model.config.eos_token_id
 
     # data
-    dataset = datasets.load_dataset(
-        dataset_name,
-        dataset_subname,
-        streaming=True,
-        trust_remote_code=True,
-        cache_dir=args.cache_dir if args.cache_dir else None,
-    )
-    dataset = dataset.shuffle(seed=43, buffer_size=20_000)
+    dataset = interleave_datasets([
+        load_dataset('occiglot/occiglot-fineweb-v0.5', data_dir=f"de/{d}", streaming=True)[dataset_subname] for d in desired_datasets
+    ])
+
+    dataset = dataset.shuffle(seed=43)
 
     # it is customary to train LLMs by fully "packing" the context length with
     # fragments of one or more documents
     packed_train_dataset = datasets.IterableDataset.from_generator(
         generator=pack,
         gen_kwargs={
-            "dataset": dataset["train"],
-            "tokenizer": tokenizer,
-            "context_length": context_length,
-        },
-    )
-
-    packed_validation_dataset = datasets.IterableDataset.from_generator(
-        generator=pack,
-        gen_kwargs={
-            "dataset": dataset["validation"],
+            "dataset": dataset,
             "tokenizer": tokenizer,
             "context_length": context_length,
         },
@@ -148,17 +154,16 @@ def train(
     per_device_train_batch_size = 4
     gradient_accumulation_steps = 8
     training_steps = 10_000_000_000 // (
-        torch.cuda.device_count()
-        * per_device_train_batch_size
-        * gradient_accumulation_steps
-        * context_length
+        torch.cuda.device_count() * per_device_train_batch_size * gradient_accumulation_steps * context_length
     )
 
-    print(f"Total tokens per training step: {per_device_train_batch_size * gradient_accumulation_steps * context_length * torch.cuda.device_count()}")
+    print(
+        f"Total tokens per training step: {per_device_train_batch_size * gradient_accumulation_steps * context_length * torch.cuda.device_count()}"
+    )
 
-    save_steps = 100 #training_steps // (6 * 4) + 1
-    eval_steps = 200 #training_steps // (6 * 2) + 1
-    
+    save_steps = 100  # training_steps // (6 * 4) + 1
+    eval_steps = 200  # training_steps // (6 * 2) + 1
+
     # training
     training_args = TrainingArguments(
         max_steps=training_steps,
@@ -171,10 +176,11 @@ def train(
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={'use_reentrant':False},
-        eval_strategy="steps",
-        eval_steps=eval_steps,
-        per_device_eval_batch_size=per_device_train_batch_size,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        do_eval=False,
+        #eval_strategy="steps",
+        #eval_steps=eval_steps,
+        #per_device_eval_batch_size=per_device_train_batch_size,
         save_strategy="steps",
         include_num_input_tokens_seen=True,
         save_steps=save_steps,
@@ -195,16 +201,16 @@ def train(
         args=training_args,
         tokenizer=tokenizer,
         train_dataset=packed_train_dataset,
-        eval_dataset=packed_validation_dataset,
+        #eval_dataset=packed_validation_dataset,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
     # overwrite lr scheduler
     # trainer.create_scheduler(num_training_steps=training_steps)
-    
+
     signal.signal(signal.SIGINT, lambda signal_number, frame: save_checkpoint_and_exit(trainer))
 
-    trainer.train(resume_from_checkpoint=True)
+    trainer.train()
 
 
 if __name__ == "__main__":
@@ -216,7 +222,7 @@ if __name__ == "__main__":
         type=str,
         help="Location of the cache directory (for HF datasets etc)",
     )
-    parser.add_argument("--proxy",  action='store_true', help="Whether to use a proxy")
+    parser.add_argument("--proxy", action="store_true", help="Whether to use a proxy")
 
     args = parser.parse_args()
 
@@ -226,11 +232,11 @@ if __name__ == "__main__":
         configure_http_backend(backend_factory=backend_factory)
 
     train(
-        base_model="microsoft/Phi-3-mini-4k-instruct",
-        #base_model="mistralai/Mistral-7B-v0.1",
+        base_model="pdelobelle/gemma-2-2b-multihead-de-en",
+        # base_model="mistralai/Mistral-7B-v0.1",
         context_length=4096,
-        dataset_name="pdelobelle/enwiki-yearly-cleaned",
-        dataset_subname="full",
-        new_model_name="pdelobelle/wikiPT-2B-2024",
+        dataset_name="occiglot/occiglot-fineweb-v0.5",
+        dataset_subname="train",
+        new_model_name="pdelobelle/gemma-2-2b-multihead-de",
         args=args,
     )
