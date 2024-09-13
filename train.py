@@ -23,30 +23,30 @@ from modeling_gemma2 import MultiheadGemma2ForCausalLM, eu_languages
 from datasets import concatenate_datasets, interleave_datasets, load_dataset
 
 desired_datasets = [
-    "legal_mc4",
-    "open_discourse_bundestag",
-    "opensubtitles",
-    "oscar_2015_14",
-    "oscar_2016_40",
-    "oscar_2017_43",
-    "oscar_2018_47",
-    "oscar_2019_22",
-    "oscar_2020_24",
-    "oscar_2020_45",
-    "oscar_2021_49",
-    "oscar_2022_27",
-    #"oscar_2022_49",
-    "oscar_2023_14",
-    "oscar_2023_23",
-    "eurlex",
-    "parlamint",
-    "tagesschau_2018_2023",
-    "wikibooks",
-    "wikinews",
-    "wikipedia_euro",
-    "wikiquote",
-    "wikisource",
-    "wikivoyage",
+    ("legal_mc4", 1),
+    ("open_discourse_bundestag", 2),
+    ("opensubtitles", 1),
+    ("oscar_2015_14", 1),
+    ("oscar_2016_40", 1),
+    ("oscar_2017_43", 1),
+    ("oscar_2018_47", 1),
+    ("oscar_2019_22", 1),
+    ("oscar_2020_24", 1),
+    ("oscar_2020_45", 1),
+    ("oscar_2021_49", 1),
+    ("oscar_2022_27", 1),
+    #("oscar_2022_49", 1),
+    ("oscar_2023_14", 1),
+    ("oscar_2023_23", 1),
+    ("eurlex", 1),
+    ("parlamint", 1),
+    ("tagesschau_2018_2023", 2),
+    ("wikibooks", 2),
+    ("wikinews", 2),
+    ("wikipedia_euro", 4),
+    ("wikiquote", 2),
+    ("wikisource", 1),
+    ("wikivoyage", 1),
 ]
 
 # Create a factory function that returns a Session with configured proxies
@@ -110,7 +110,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     
     tokenizer = tokenizers['de']
 
-    model = MultiheadGemma2ForCausalLM.from_pretrained(base_model)
+    model = AutoModelForCausalLM.from_pretrained(base_model)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params:,}")
@@ -118,6 +118,8 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     model.config._attn_implementation = "sdpa"
     model.config.output_attentions = False
     model.config.torch_dtype = "bfloat16"
+    model.config.eos_token_id = tokenizer.eos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     # saving some space
     del model.model.embed_tokens['en']
@@ -131,12 +133,14 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
     # fix padding (mostly for inference, later for finetuning changed to unk_token_id)
     tokenizer.pad_token = tokenizer.eos_token
     
-    model.config.pad_token_id = model.config.eos_token_id
+    # model.config.pad_token_id = model.config.eos_token_id
 
     # data
     dataset = interleave_datasets([
-        load_dataset('occiglot/occiglot-fineweb-v0.5', data_dir=f"de/{d}", streaming=True)[dataset_subname] for d in desired_datasets
-    ])
+        load_dataset('occiglot/occiglot-fineweb-v0.5', data_dir=f"de/{d}", streaming=True)[dataset_subname] for d, _ in desired_datasets],
+        probabilities=[p/(sum([pp for _, pp in desired_datasets])) for _, p in desired_datasets],
+        stopping_strategy="all_exhausted"
+    )
 
     dataset = dataset.shuffle(seed=43)
 
@@ -146,6 +150,30 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         generator=pack,
         gen_kwargs={
             "dataset": dataset,
+            "tokenizer": tokenizer,
+            "context_length": context_length,
+        },
+    )
+
+    dataset_test = load_dataset("wikimedia/wikipedia", "20231101.de", split="train", streaming=True)
+    dataset_test = dataset_test.take(2000)
+
+    dataset_toxic = load_dataset("textdetox/multilingual_toxicity_dataset", split="de", streaming=True)
+    dataset_toxic = dataset_toxic.take(500)
+
+    packed_wiki_dataset = datasets.IterableDataset.from_generator(
+        generator=pack,
+        gen_kwargs={
+            "dataset": dataset_test,
+            "tokenizer": tokenizer,
+            "context_length": context_length,
+        },
+    )
+
+    packed_toxic_dataset = datasets.IterableDataset.from_generator(
+        generator=pack,
+        gen_kwargs={
+            "dataset": dataset_toxic,
             "tokenizer": tokenizer,
             "context_length": context_length,
         },
@@ -161,8 +189,8 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         f"Total tokens per training step: {per_device_train_batch_size * gradient_accumulation_steps * context_length * torch.cuda.device_count()}"
     )
 
-    save_steps = 100  # training_steps // (6 * 4) + 1
-    eval_steps = 200  # training_steps // (6 * 2) + 1
+    save_steps = 300  # training_steps // (6 * 4) + 1
+    eval_steps = 300  # training_steps // (6 * 2) + 1
 
     # training
     training_args = TrainingArguments(
@@ -178,9 +206,9 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         do_eval=False,
-        #eval_strategy="steps",
-        #eval_steps=eval_steps,
-        #per_device_eval_batch_size=per_device_train_batch_size,
+        eval_strategy="steps",
+        eval_steps=eval_steps,
+        per_device_eval_batch_size=per_device_train_batch_size,
         save_strategy="steps",
         include_num_input_tokens_seen=True,
         save_steps=save_steps,
@@ -201,7 +229,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
         args=training_args,
         tokenizer=tokenizer,
         train_dataset=packed_train_dataset,
-        #eval_dataset=packed_validation_dataset,
+        eval_dataset={"wikipedia": packed_wiki_dataset, "toxicity": packed_toxic_dataset},
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
@@ -216,7 +244,7 @@ def train(base_model, context_length, dataset_name, dataset_subname, new_model_n
 if __name__ == "__main__":
     # Parse cli args
     parser = argparse.ArgumentParser(description="Train a language model")
-    parser.add_argument("--output-dir", type=str, help="Output directory")
+    parser.add_argument("--output-dir", type=str, help="Output directory", default="/tmp/llm/")
     parser.add_argument(
         "--cache-dir",
         type=str,
@@ -232,9 +260,9 @@ if __name__ == "__main__":
         configure_http_backend(backend_factory=backend_factory)
 
     train(
-        base_model="pdelobelle/gemma-2-2b-multihead-de-en",
+        base_model="pdelobelle/gemma-2-2b-de",
         # base_model="mistralai/Mistral-7B-v0.1",
-        context_length=4096,
+        context_length=8192,
         dataset_name="occiglot/occiglot-fineweb-v0.5",
         dataset_subname="train",
         new_model_name="pdelobelle/gemma-2-2b-multihead-de",
