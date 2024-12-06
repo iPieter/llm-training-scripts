@@ -9,9 +9,11 @@
 
 You can then run the following commands to get the benchmark scores. You can fill in any model you want to compare:
 
+```bash
 python main.py \
 --model hf-causal \
 --model_args pretrained=flair/bueble-lm-2b,dtype=float16 \
 --tasks "arc_challenge_de,truthful_qa_de,hellaswag_de" \
 --num_fewshot 0 \
 --device cuda:0
+```
