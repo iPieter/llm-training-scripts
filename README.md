@@ -4,6 +4,11 @@
 
 ## Büble-2B evaluation
 1. Clone the GermanBench repo: https://github.com/bjoernpl/GermanBenchmark
+  ```
+  git clone https://github.com/bjoernpl/lm-evaluation-harness-de/
+  cd lm-evaluation-harness-de
+  git checkout mmlu_de
+  ```
 2. Set up a virtual environment
 3. `pip install -r requirements.txt`
 
